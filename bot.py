@@ -94,10 +94,12 @@ class Sparkchain:
                 connector = ProxyConnector.from_url(proxy)
             except Exception as e:
                 self.log(f"{Fore.RED}Invalid proxy {proxy}: {e}{Style.RESET_ALL}")
+                return
 
-        while True:
-            try:
-                async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=10)) as session:
+        # Session is created ONCE per poller and reused!
+        async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=10)) as session:
+            while True:
+                try:
                     async with session.get(url, headers=headers) as resp:
                         if resp.status == 200:
                             data = await resp.json()
@@ -105,9 +107,12 @@ class Sparkchain:
                             self.log(f"{Fore.GREEN}[{self.mask_account(email)}] Node:{node_index+1} via {proxy or 'no proxy'} | Points: {points}{Style.RESET_ALL}")
                         else:
                             self.log(f"{Fore.YELLOW}[{self.mask_account(email)}] Node:{node_index+1} via {proxy or 'no proxy'} | HTTP {resp.status}{Style.RESET_ALL}")
-            except Exception as e:
-                self.log(f"{Fore.RED}[{self.mask_account(email)}] Node:{node_index+1} via {proxy or 'no proxy'} | Poll error: {e}{Style.RESET_ALL}")
-            await asyncio.sleep(30)  # Poll every 30s (medium-fast)
+                except Exception as e:
+                    self.log(f"{Fore.RED}[{self.mask_account(email)}] Node:{node_index+1} via {proxy or 'no proxy'} | Poll error: {e}{Style.RESET_ALL}")
+                    # Wait a bit longer after error to avoid hammering dead proxies
+                    await asyncio.sleep(10)
+                else:
+                    await asyncio.sleep(30)  # Poll every 30s (medium-fast)
 
     async def main(self):
         # Load tokens
