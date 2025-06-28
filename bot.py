@@ -85,8 +85,8 @@ class Sparkchain:
         else:
             self.log(f"{Fore.GREEN}Loaded {len(self.proxies)} proxies.{Style.RESET_ALL}")
 
-    async def user_device(self, token, proxy=None):
-        url = "https://api.sparkchain.ai/devices"
+    async def poll_profile(self, email, token, node_index, proxy):
+        url = "https://api.sparkchain.ai/profile"
         headers = {**self.headers, "Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         connector = None
         if proxy:
@@ -94,57 +94,20 @@ class Sparkchain:
                 connector = ProxyConnector.from_url(proxy)
             except Exception as e:
                 self.log(f"{Fore.RED}Invalid proxy {proxy}: {e}{Style.RESET_ALL}")
-        try:
-            async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=10)) as session:
-                async with session.get(url=url, headers=headers) as resp:
-                    resp.raise_for_status()
-                    devices = await resp.json()
-                    if devices and isinstance(devices, list):
-                        return devices[0].get("device_id")
-        except Exception as e:
-            self.log(f"{Fore.RED}[Device] {proxy or 'no proxy'}: {e}{Style.RESET_ALL}")
-        return None
 
-    async def connect_websocket(self, email, token, device_id, proxy=None):
-        wss_url = f"wss://ws-v2.sparkchain.ai/socket.io/?token={token}&device_id={device_id}&device_version=0.9.2&EIO=4&transport=websocket"
-        headers = {
-            "User-Agent": self.headers["User-Agent"],
-            "Origin": "chrome-extension://jlpniknnodfkbmbgkjelcailjljlecch",
-        }
-        connector = None
-        if proxy:
-            try:
-                connector = ProxyConnector.from_url(proxy)
-            except Exception as e:
-                self.log(f"{Fore.RED}Invalid proxy {proxy}: {e}{Style.RESET_ALL}")
         while True:
             try:
-                async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=30)) as session:
-                    async with session.ws_connect(wss_url, headers=headers, heartbeat=25) as ws:
-                        self.log(f"{Fore.GREEN}[{self.mask_account(email)}] Websocket via {proxy or 'no proxy'}")
-                        await ws.send_str('40')  # initial handshake
-                        while True:
-                            msg = await ws.receive(timeout=30)
-                            if msg.type == aiohttp.WSMsgType.TEXT:
-                                if msg.data == "2":
-                                    await ws.send_str('3')
-                            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                                break
+                async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=10)) as session:
+                    async with session.get(url, headers=headers) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            points = data.get("total_points", "N/A")
+                            self.log(f"{Fore.GREEN}[{self.mask_account(email)}] Node:{node_index+1} via {proxy or 'no proxy'} | Points: {points}{Style.RESET_ALL}")
+                        else:
+                            self.log(f"{Fore.YELLOW}[{self.mask_account(email)}] Node:{node_index+1} via {proxy or 'no proxy'} | HTTP {resp.status}{Style.RESET_ALL}")
             except Exception as e:
-                self.log(f"{Fore.YELLOW}[{self.mask_account(email)}] Websocket error: {e}")
-                await asyncio.sleep(2)  # Less wait to reconnect faster
-
-    async def run_node(self, email, token, node_index, proxy):
-        device_id = None
-        for _ in range(2):  # Try less times for speed
-            device_id = await self.user_device(token, proxy)
-            if device_id:
-                break
-            await asyncio.sleep(1)  # Shorter wait
-        if not device_id:
-            self.log(f"{Fore.RED}[{self.mask_account(email)}] Could not get device id, skipping node.")
-            return
-        await self.connect_websocket(email, token, device_id, proxy)
+                self.log(f"{Fore.RED}[{self.mask_account(email)}] Node:{node_index+1} via {proxy or 'no proxy'} | Poll error: {e}{Style.RESET_ALL}")
+            await asyncio.sleep(30)  # Poll every 30s (medium-fast)
 
     async def main(self):
         # Load tokens
@@ -180,7 +143,7 @@ class Sparkchain:
                 self.log(f"{Fore.RED}No proxies loaded. Exiting.")
                 return
         self.log(f"{Fore.GREEN}Account's Total: {len(tokens)}")
-        # Start nodes (faster scheduling)
+        # Start nodes (pollers)
         tasks = []
         proxy_count = len(self.proxies) if self.proxies else 1
         for idx, token in enumerate(tokens):
@@ -190,7 +153,7 @@ class Sparkchain:
                     proxy = self.proxies[(idx * nodes_count + node_index) % proxy_count]
                 else:
                     proxy = None
-                tasks.append(self.run_node(email, token, node_index, proxy))
+                tasks.append(self.poll_profile(email, token, node_index, proxy))
         await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
